@@ -1,221 +1,387 @@
-from openai import OpenAI
-import streamlit as st
+import re
+from pathlib import Path
+
 import pandas as pd
+import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-# Sample B2B product catalogue
-products = pd.DataFrame([
-    {
-        "name": "Dell Latitude 3540",
-        "category": "Laptop",
-        "price": 57999,
-        "description": "Business laptop with 16GB RAM, Intel Core i5 processor and 512GB SSD for corporate office employees."
-    },
-    {
-        "name": "HP ProBook 440 G10",
-        "category": "Laptop",
-        "price": 59499,
-        "description": "Professional business laptop with 16GB RAM, Intel Core i5 processor and 512GB SSD for office productivity."
-    },
-    {
-        "name": "Lenovo ThinkPad E14",
-        "category": "Laptop",
-        "price": 55999,
-        "description": "Reliable business laptop with 16GB RAM, Intel Core i5 processor and 512GB SSD for professional users."
-    },
-    {
-        "name": "ASUS ExpertBook B1",
-        "category": "Laptop",
-        "price": 48999,
-        "description": "Affordable business laptop with 8GB RAM, Intel Core i5 processor and 512GB SSD for small businesses."
-    },
-
-    {
-        "name": "Canon Laser Printer LBP",
-        "category": "Printer",
-        "price": 18999,
-        "description": "Monochrome laser printer with high-speed printing for small and medium offices."
-    },
-    {
-        "name": "Epson EcoTank L3250",
-        "category": "Printer",
-        "price": 22999,
-        "description": "Colour ink tank printer with low running costs for offices, schools and businesses."
-    },
-    {
-        "name": "HP LaserJet Pro",
-        "category": "Printer",
-        "price": 24999,
-        "description": "Fast wireless laser printer designed for business documents and office environments."
-    },
-
-    {
-        "name": "Logitech Business Webcam",
-        "category": "Webcam",
-        "price": 6999,
-        "description": "Full HD business webcam for video meetings, remote work, conferences and corporate communication."
-    },
-    {
-        "name": "HP 320 FHD Webcam",
-        "category": "Webcam",
-        "price": 4999,
-        "description": "Full HD webcam with built-in microphone for online meetings and professional video calls."
-    },
-    {
-        "name": "Lenovo 300 FHD Webcam",
-        "category": "Webcam",
-        "price": 4499,
-        "description": "Affordable Full HD webcam for remote employees, video conferencing and corporate communication."
-    },
-
-    {
-        "name": "Dell P2422H Monitor",
-        "category": "Monitor",
-        "price": 16999,
-        "description": "24-inch Full HD business monitor designed for office productivity and professional work."
-    },
-    {
-        "name": "LG 24MP60G Monitor",
-        "category": "Monitor",
-        "price": 13999,
-        "description": "24-inch Full HD monitor suitable for offices, employees and everyday business productivity."
-    },
-    {
-        "name": "Samsung Business Monitor",
-        "category": "Monitor",
-        "price": 17999,
-        "description": "24-inch Full HD monitor designed for corporate workstations and professional office environments."
-    },
-
-    {
-        "name": "TP-Link 24-Port Gigabit Switch",
-        "category": "Networking",
-        "price": 8499,
-        "description": "24-port Gigabit network switch for connecting computers, printers and devices in offices."
-    },
-    {
-        "name": "Cisco Business 350 Switch",
-        "category": "Networking",
-        "price": 32999,
-        "description": "Managed Gigabit switch designed for enterprise and medium-sized business networks."
-    },
-    {
-        "name": "TP-Link WiFi 6 Router",
-        "category": "Networking",
-        "price": 7999,
-        "description": "High-speed WiFi 6 router suitable for offices, small businesses and reliable wireless connectivity."
-    },
-
-    {
-        "name": "Epson CO-W01 Projector",
-        "category": "Projector",
-        "price": 34999,
-        "description": "Business projector for conference rooms, presentations, training sessions and corporate meetings."
-    },
-    {
-        "name": "BenQ Business Projector",
-        "category": "Projector",
-        "price": 42999,
-        "description": "Bright business projector designed for meeting rooms, presentations and professional corporate use."
-    }
-])
-
-
-# Page configuration
 st.set_page_config(
-    page_title="B2B Product Recommendation Assistant",
-    page_icon="🤖"
+    page_title="B2B Procurement Copilot",
+    page_icon="🤖",
+    layout="wide",
 )
 
-st.title("🤖 B2B Product Recommendation Assistant")
-
-st.write(
-    "Describe what you need in normal language and "
-    "the system will recommend relevant products."
-)
+DATA_FILE = Path(__file__).parent / "products.csv"
 
 
-# User query
-query = st.text_input(
-    "What are you looking for?",
-    placeholder="Example: I need office laptops with 16GB RAM"
-)
+@st.cache_data
+def load_products():
+    df = pd.read_csv(DATA_FILE)
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
+    return df
 
 
-# Recommendation engine
-if query:
+products = load_products()
 
-    # Identify the product category from the user's query
-    query_lower = query.lower()
 
-    category_keywords = {
-        "Laptop": ["laptop", "notebook", "computer"],
-        "Printer": ["printer", "printing"],
-        "Webcam": ["webcam", "camera", "video meeting"]
+def extract_requirements(query: str) -> dict:
+    q = query.lower()
+
+    req = {
+        "budget": None,
+        "quantity": None,
+        "ram_gb": None,
+        "storage_gb": None,
+        "screen_in": None,
+        "category": None,
+        "use_case": [],
     }
 
-    detected_category = None
-
-    for category, keywords in category_keywords.items():
-        if any(keyword in query_lower for keyword in keywords):
-            detected_category = category
+    # Budget: ₹60,000 / 60000 / under 60k / below 60,000
+    budget_patterns = [
+        r"(?:under|below|less than|upto|up to|max(?:imum)?|within)\s*(?:₹|rs\.?\s*)?([\d,]+)\s*k\b",
+        r"(?:under|below|less than|upto|up to|max(?:imum)?|within)\s*(?:₹|rs\.?\s*)?([\d,]+(?:,\d{3})*)",
+        r"(?:₹|rs\.?\s*)([\d,]+(?:,\d{3})*)",
+    ]
+    for pattern in budget_patterns:
+        m = re.search(pattern, q)
+        if m:
+            raw = m.group(1).replace(",", "")
+            value = float(raw)
+            if "k" in m.group(0):
+                value *= 1000
+            req["budget"] = value
             break
 
-    # Filter products when a category is detected
-    if detected_category:
-        filtered_products = products[
-            products["category"] == detected_category
-        ].copy()
-    else:
-        filtered_products = products.copy()
+    # Quantity: 25 laptops / quantity 25 / 25 units
+    quantity_patterns = [
+        r"\b(\d+)\s*(?:units?|pieces?|laptops?|desktops?|monitors?|chairs?|printers?|routers?|headsets?|webcams?)\b",
+        r"(?:quantity|qty)\s*[:=]?\s*(\d+)\b",
+    ]
+    for pattern in quantity_patterns:
+        m = re.search(pattern, q)
+        if m:
+            req["quantity"] = int(m.group(1))
+            break
 
-    # Combine product information
-    product_text = (
-        filtered_products["name"] + " " +
-        filtered_products["category"] + " " +
-        filtered_products["description"]
+    # RAM
+    m = re.search(r"\b(\d+)\s*gb\s*(?:ram|memory)\b|\b(\d+)\s*gb\b", q)
+    if m:
+        req["ram_gb"] = int(next(x for x in m.groups() if x))
+
+    # Storage
+    m = re.search(r"\b(\d+)\s*(?:gb|tb)\s*(?:ssd|storage|hdd)?\b", q)
+    if m and not re.search(r"\b\d+\s*gb\s*(?:ram|memory)\b", m.group(0)):
+        value = int(m.group(1))
+        req["storage_gb"] = value * 1024 if "tb" in m.group(0) else value
+
+    # Screen size
+    m = re.search(r"\b(\d{2}(?:\.\d)?)\s*(?:inch|inches|in)\b", q)
+    if m:
+        req["screen_in"] = float(m.group(1))
+
+    categories = {
+        "laptop": ["laptop", "notebook"],
+        "desktop": ["desktop", "pc", "workstation"],
+        "monitor": ["monitor", "display", "screen"],
+        "webcam": ["webcam", "camera", "video meeting"],
+        "headset": ["headset", "headphones"],
+        "printer": ["printer", "printing"],
+        "router": ["router", "network router", "wifi router"],
+        "projector": ["projector", "projection"],
+        "office chair": ["office chair", "ergonomic chair", "chair"],
+        "tablet": ["tablet", "ipad"],
+    }
+    for category, terms in categories.items():
+        if any(term in q for term in terms):
+            req["category"] = category
+            break
+
+    use_cases = {
+        "office productivity": ["office", "productivity", "excel", "work"],
+        "video conferencing": ["video call", "video meeting", "conference", "zoom", "teams", "meetings"],
+        "sales": ["sales", "field sales", "sales team"],
+        "design": ["design", "creative", "photoshop", "video editing", "editing"],
+        "customer support": ["customer support", "call center", "contact center"],
+        "remote work": ["remote", "work from home", "wfh"],
+        "gaming": ["gaming", "gaming performance"],
+    }
+    for label, terms in use_cases.items():
+        if any(term in q for term in terms):
+            req["use_case"].append(label)
+
+    return req
+
+
+def build_search_text(row):
+    return " ".join([
+        str(row["name"]),
+        str(row["category"]),
+        str(row["brand"]),
+        str(row["description"]),
+        str(row["use_cases"]),
+        str(row["specifications"]),
+    ])
+
+
+@st.cache_resource
+def build_vectorizer(corpus):
+    vectorizer = TfidfVectorizer(
+        lowercase=True,
+        stop_words="english",
+        ngram_range=(1, 2),
+        sublinear_tf=True,
+    )
+    matrix = vectorizer.fit_transform(corpus)
+    return vectorizer, matrix
+
+
+products["search_text"] = products.apply(build_search_text, axis=1)
+vectorizer, product_matrix = build_vectorizer(tuple(products["search_text"]))
+
+
+def recommend(query, top_n=5):
+    req = extract_requirements(query)
+    query_vector = vectorizer.transform([query])
+    semantic_scores = cosine_similarity(query_vector, product_matrix).flatten()
+
+    ranked = products.copy()
+    ranked["semantic_score"] = semantic_scores
+
+    # Hard/soft business constraints.
+    ranked["constraint_score"] = 0.0
+
+    if req["budget"] is not None:
+        ranked["budget_fit"] = (ranked["price"] <= req["budget"]).astype(float)
+        # Small bonus for products comfortably inside the budget.
+        ranked["budget_score"] = (
+            (ranked["budget_fit"] * 0.7)
+            + ((ranked["price"] <= req["budget"] * 0.85).astype(float) * 0.3)
+        )
+        ranked["constraint_score"] += ranked["budget_score"] * 0.30
+    else:
+        ranked["budget_score"] = 0.0
+
+    if req["category"]:
+        category_match = ranked["category"].str.lower().eq(req["category"].lower())
+        ranked["constraint_score"] += category_match.astype(float) * 0.30
+
+    if req["ram_gb"] is not None:
+        ranked["ram_fit"] = (
+            ranked["ram_gb"].fillna(0) >= req["ram_gb"]
+        ).astype(float)
+        ranked["constraint_score"] += ranked["ram_fit"] * 0.15
+    else:
+        ranked["ram_fit"] = 0.0
+
+    if req["storage_gb"] is not None:
+        ranked["storage_fit"] = (
+            ranked["storage_gb"].fillna(0) >= req["storage_gb"]
+        ).astype(float)
+        ranked["constraint_score"] += ranked["storage_fit"] * 0.10
+    else:
+        ranked["storage_fit"] = 0.0
+
+    if req["use_case"]:
+        def use_case_match(value):
+            text = str(value).lower()
+            return float(any(x in text for x in req["use_case"]))
+
+        ranked["use_case_fit"] = ranked["use_cases"].apply(use_case_match)
+        ranked["constraint_score"] += ranked["use_case_fit"] * 0.15
+    else:
+        ranked["use_case_fit"] = 0.0
+
+    # 60% semantic relevance + 40% business constraints.
+    ranked["match_score"] = (
+        ranked["semantic_score"] * 0.60
+        + ranked["constraint_score"] * 0.40
     )
 
-    # Convert text into numerical representations
-    vectorizer = TfidfVectorizer(stop_words="english")
+    # If a requested budget exists, strongly prefer products inside it.
+    if req["budget"] is not None:
+        ranked.loc[ranked["price"] > req["budget"], "match_score"] *= 0.55
 
-    product_vectors = vectorizer.fit_transform(product_text)
+    return ranked.sort_values(
+        ["match_score", "rating"],
+        ascending=[False, False],
+    ).head(top_n), req
 
-    query_vector = vectorizer.transform([query])
 
-    # Compare user query with products
-    similarity_scores = cosine_similarity(
-        query_vector,
-        product_vectors
-    ).flatten()
+def explain_match(row, req):
+    reasons = []
 
-    filtered_products["match_score"] = similarity_scores
+    if req["category"] and str(row["category"]).lower() == req["category"].lower():
+        reasons.append(f"matches the {req['category']} category")
 
-    # Get the most relevant products
-    recommendations = filtered_products.sort_values(
-        "match_score",
-        ascending=False
-    ).head(3)
+    if req["budget"] is not None:
+        if row["price"] <= req["budget"]:
+            reasons.append("fits your budget")
+        else:
+            reasons.append("exceeds the stated budget")
 
-    # Display recommendations
-    st.subheader("Recommended Products")
+    if req["ram_gb"] is not None and row["ram_gb"] >= req["ram_gb"]:
+        reasons.append(f"meets the {req['ram_gb']} GB RAM requirement")
 
-    for _, product in recommendations.iterrows():
+    if req["storage_gb"] is not None and row["storage_gb"] >= req["storage_gb"]:
+        reasons.append(f"meets the {req['storage_gb']} GB storage requirement")
 
-        score = round(product["match_score"] * 100)
+    for use_case in req["use_case"]:
+        if use_case.lower() in str(row["use_cases"]).lower():
+            reasons.append(f"suits {use_case}")
 
-        st.markdown(
-            f"### {product['name']}"
-        )
+    if not reasons:
+        reasons.append("has strong semantic similarity to the requirement")
 
-        st.write(
-            f"**Category:** {product['category']}  \n"
-            f"**Price:** ₹{product['price']:,}  \n"
-            f"**Match Score:** {score}%"
-        )
+    return reasons
 
-        st.write(product["description"])
 
-        st.divider()
+st.markdown(
+    """
+    <style>
+    .main-title {font-size: 2.3rem; font-weight: 750; margin-bottom: 0.2rem;}
+    .subtitle {color: #6b7280; font-size: 1.05rem; margin-bottom: 1.5rem;}
+    .metric-card {padding: 1rem; border-radius: 12px; border: 1px solid #e5e7eb;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<div class="main-title">🤖 B2B Procurement Copilot</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="subtitle">Turn a business requirement into ranked, explainable product recommendations.</div>',
+    unsafe_allow_html=True,
+)
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Products in catalogue", len(products))
+with col2:
+    st.metric("Categories", products["category"].nunique())
+with col3:
+    st.metric("Recommendation model", "Hybrid NLP + Rules")
+
+st.divider()
+
+examples = [
+    "Need 25 laptops for our sales team, 16GB RAM, under ₹60,000 for Excel and video calls",
+    "Need a webcam for corporate video meetings",
+    "Need office chairs for a customer support team with ergonomic support",
+]
+
+st.subheader("🔎 Describe your requirement")
+
+example = st.selectbox("Try an example", ["Custom requirement"] + examples)
+default_text = "" if example == "Custom requirement" else example
+
+query = st.text_area(
+    "Business requirement",
+    value=default_text,
+    height=100,
+    placeholder="Example: Need 20 business laptops with 16GB RAM under ₹60,000 for sales employees...",
+)
+
+top_n = st.slider("Number of recommendations", 3, 8, 5)
+
+if st.button("🚀 Find Best Products", type="primary", use_container_width=True):
+    if not query.strip():
+        st.warning("Please enter a product requirement.")
+    else:
+        results, req = recommend(query, top_n)
+
+        st.session_state["results"] = results
+        st.session_state["requirements"] = req
+        st.session_state["query"] = query
+
+
+if "results" in st.session_state:
+    results = st.session_state["results"]
+    req = st.session_state["requirements"]
+
+    st.divider()
+    st.subheader("🧠 Requirement understood")
+
+    req_cols = st.columns(5)
+    items = [
+        ("Category", req["category"] or "Any"),
+        ("Budget", f"₹{req['budget']:,.0f}" if req["budget"] else "Not specified"),
+        ("Quantity", str(req["quantity"]) if req["quantity"] else "Not specified"),
+        ("RAM", f"{req['ram_gb']} GB" if req["ram_gb"] else "Not specified"),
+        ("Use case", ", ".join(req["use_case"]) if req["use_case"] else "General"),
+    ]
+
+    for col, (label, value) in zip(req_cols, items):
+        with col:
+            st.metric(label, value)
+
+    st.subheader("🏆 Recommended products")
+
+    for rank, (_, product) in enumerate(results.iterrows(), start=1):
+        score = min(100, round(product["match_score"] * 100))
+        with st.container(border=True):
+            left, middle, right = st.columns([5, 2, 1])
+
+            with left:
+                st.markdown(f"### #{rank} — {product['name']}")
+                st.write(f"**{product['brand']} · {product['category']}**")
+                st.write(product["description"])
+                reasons = explain_match(product, req)
+                st.write("**Why it matches:** " + "; ".join(reasons) + ".")
+
+            with middle:
+                st.metric("Match score", f"{score}%")
+                st.write(f"**Price:** ₹{product['price']:,.0f}")
+                st.write(f"**Rating:** ⭐ {product['rating']}/5")
+
+            with right:
+                st.write("**Key specs**")
+                st.write(product["specifications"])
+
+    st.divider()
+    st.subheader("📊 Compare top recommendations")
+
+    compare = results[
+        ["name", "category", "price", "rating", "ram_gb", "storage_gb", "match_score"]
+    ].copy()
+    compare["match_score"] = (compare["match_score"] * 100).round(0).astype(int).astype(str) + "%"
+    compare["price"] = compare["price"].map(lambda x: f"₹{x:,.0f}")
+    compare["ram_gb"] = compare["ram_gb"].map(lambda x: f"{int(x)} GB")
+    compare["storage_gb"] = compare["storage_gb"].map(lambda x: f"{int(x)} GB")
+    compare = compare.rename(columns={
+        "name": "Product",
+        "category": "Category",
+        "price": "Price",
+        "rating": "Rating",
+        "ram_gb": "RAM",
+        "storage_gb": "Storage",
+        "match_score": "Match",
+    })
+    st.dataframe(compare, use_container_width=True, hide_index=True)
+
+    st.caption(
+        "Model note: recommendations combine TF-IDF/cosine semantic similarity "
+        "with business constraints such as category, budget, RAM, storage and use case."
+    )
+
+with st.expander("ℹ️ How the recommendation engine works"):
+    st.markdown(
+        """
+        **1. Requirement extraction:** simple NLP/rule-based parsing identifies useful
+        business constraints such as category, budget, quantity, RAM, storage and use case.
+
+        **2. Text representation:** TF-IDF converts the requirement and product information
+        into numerical vectors.
+
+        **3. Semantic matching:** cosine similarity measures how closely the requirement
+        matches each product.
+
+        **4. Business scoring:** category, budget and specification fit are added as
+        constraints.
+
+        **5. Ranking:** the hybrid score produces an explainable shortlist instead of
+        relying only on keyword matching.
+        """
+    )

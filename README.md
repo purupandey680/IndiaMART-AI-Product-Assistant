@@ -1,46 +1,66 @@
-# B2B Product Recommendation Assistant
+# B2B Procurement Copilot
 
-An AI/ML-powered B2B product recommendation assistant built with Python and Streamlit.
+A product-oriented AI/ML prototype for B2B procurement and product discovery.
 
-## Overview
+## What it does
 
-The application allows users to describe their business product requirements in natural language and receive relevant product recommendations from a sample B2B product catalogue.
+Users describe a business requirement in natural language, for example:
 
-For example:
+> Need 25 laptops for our sales team, 16GB RAM, under ₹60,000 for Excel and video calls.
 
-> "I need laptops for office employees with 16GB RAM."
+The application extracts useful constraints, searches a structured product catalogue, and produces an explainable ranked shortlist.
 
-The system analyzes the requirement and ranks products based on their similarity to the user's request.
+## Recommendation architecture
 
-## AI/ML Approach
+1. **Requirement extraction** — lightweight NLP/rule-based parsing identifies category, budget, quantity, RAM, storage and use case.
+2. **TF-IDF representation** — converts the requirement and product information into numerical vectors.
+3. **Cosine similarity** — measures semantic/textual relevance.
+4. **Business constraints** — budget, category, RAM, storage and use-case fit are incorporated into the score.
+5. **Explainable ranking** — the UI shows why a product matched.
 
-- **NLP:** Processes natural-language product requirements.
-- **TF-IDF Vectorization:** Converts user requirements and product descriptions into numerical representations.
-- **Cosine Similarity:** Calculates similarity between the requirement and available products.
-- **Ranking:** Products are ranked based on their calculated match score.
+This hybrid approach is intentionally simple and explainable: semantic matching handles natural language while business rules enforce procurement constraints.
 
-## Technologies Used
+## Tech stack
 
 - Python
 - Streamlit
 - Pandas
 - Scikit-learn
-- NLP
 - TF-IDF
-- Cosine Similarity
+- Cosine similarity
+- Regex/NLP-based requirement extraction
 
-## Key Features
-
-- Natural-language product search
-- AI/ML-based product matching
-- Explainable match scores
-- Product category and pricing information
-- Simple business-friendly user interface
-
-## How to Run
-
-Install the required dependencies:
+## Run locally
 
 ```bash
-pip install streamlit pandas scikit-learn openai
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 streamlit run app.py
+```
+
+## Project structure
+
+```text
+IndiaMART-AI-Product-Assistant/
+├── app.py
+├── products.csv
+├── requirements.txt
+├── README.md
+└── .gitignore
+```
+
+## Product thinking
+
+The prototype is designed around a B2B buyer journey rather than only a model demo:
+
+**Requirement → Understand intent → Apply constraints → Rank products → Explain recommendation → Compare options**
+
+## Future improvements
+
+- Connect to a real product catalogue/API
+- Learn ranking weights from historical buyer interactions
+- Add supplier quality, delivery time and inventory availability
+- Add user feedback to improve ranking
+- Add multilingual Indian-language query support
+- Deploy as a production API + web application
